@@ -32,6 +32,15 @@ admin user
   "password": "bobberpassword",
   accountNumber: "420"
 }
+## Test Reg:
+
+{
+  "email": "newuser@example.com",
+  "password": "SecurePassword123!",
+  "fullName": "John Doe",
+  "idNumber": "1234567890",
+  "accountNumber": "9876543210"
+}
 
 ## Example of succsess
 
