@@ -47,11 +47,22 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // Input validation for registration
-const validateInput = (email, password) => {
+const validateInput = (email, password, fullName, idNumber, accountNumber) => {
   const emailPattern = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}$/;
-  const passwordPattern = /^[a-zA-Z0-9!@#$%^&*]{6,30}$/;
-  return emailPattern.test(email) && passwordPattern.test(password);
+  const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z\d!@#$%^&*]{8,30}$/;
+  const fullNamePattern = /^[A-Za-z\s]+$/; 
+  const idNumberPattern = /^\d+$/; 
+  const accountNumberPattern = /^\d{4,10}$/; 
+
+  const isEmailValid = emailPattern.test(email);
+  const isPasswordValid = passwordPattern.test(password);
+  const isFullNameValid = fullNamePattern.test(fullName);
+  const isIdNumberValid = idNumberPattern.test(idNumber);
+  const isAccountNumberValid = accountNumberPattern.test(accountNumber);
+
+  return isEmailValid && isPasswordValid && isFullNameValid && isIdNumberValid && isAccountNumberValid;
 };
+
 
 // Password hashing function
 const hashPassword = async (password) => {
@@ -84,15 +95,16 @@ const authenticateToken = (req, res, next) => {
 // REGISTER route
 app.post('/api/register', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, fullName, idNumber, accountNumber } = req.body;
 
-    userType="user";
+    userType = "user"; 
+    //userType = "admin";
 
-    if (!email || !password || !userType) {
-      return res.status(400).json({ error: 'All fields (email, password, userType) are required.' });
+    if (!email || !password || !userType || !fullName || !idNumber || !accountNumber) {
+      return res.status(400).json({ error: 'All fields (email, password, fullName, idNumber, accountNumber, userType) are required.' });
     }
- 
-    if (!validateInput(email, password)) {
+
+    if (!validateInput(email, password,fullName,idNumber,accountNumber)) {
       return res.status(400).json({ error: 'Invalid input' });
     }
 
@@ -110,7 +122,7 @@ app.post('/api/register', async (req, res) => {
     }
 
     const hashedPassword = await hashPassword(password);
-    await collection.insertOne({ email, password: hashedPassword, userType }); 
+    await collection.insertOne({ email, password: hashedPassword, userType, fullName, idNumber, accountNumber }); 
 
     return res.status(201).json({
       message: 'User registered successfully'
@@ -121,23 +133,24 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
+
 // LOGIN route
 app.post('/api/login', limiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, accountNumber } = req.body;  
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'All fields (email, password) are required.' });
+    if (!email || !password || !accountNumber) {
+      return res.status(400).json({ error: 'All fields (email, password, account number) are required.' });
     }
 
     const db = client.db('blogs');
     const collection = db.collection('user');
-    const existingUser = await collection.findOne({ email });
+    const existingUser = await collection.findOne({ email, accountNumber });  
 
     if (!existingUser) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid email, account number, or password' });
     }
-
+    //const hashedPassword = await hashPassword(password);
     const isPasswordValid = await bcrypt.compare(password, existingUser.password);
     if (isPasswordValid) {
       const token = generateToken(existingUser);
@@ -147,13 +160,24 @@ app.post('/api/login', limiter, async (req, res) => {
         userType: existingUser.userType 
       });
     } else {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid email, account number, or password' });
     }
   } catch (err) {
     console.error('Error during login:', err);
     res.status(500).json({ error: 'Failed login' });
   }
 });
+
+const validatePaymentInput = (amount, currency, paymentMethod) => {
+  const validCurrencies = ['USD', 'EUR', 'R']; 
+  const validPaymentMethods = ['monero', 'swift', 'paypal']; 
+
+  const isAmountValid = typeof amount === 'number' && amount > 0;
+  const isCurrencyValid = validCurrencies.includes(currency);
+  const isPaymentMethodValid = validPaymentMethods.includes(paymentMethod);
+
+  return isAmountValid && isCurrencyValid && isPaymentMethodValid;
+};
 
 // Submit Payment route
 app.post('/api/submit-payment', authenticateToken, async (req, res) => {
@@ -164,15 +188,23 @@ app.post('/api/submit-payment', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'All fields (amount, currency, paymentMethod) are required.' });
     }
 
-    const userId = req.user.id;
+    if (!validatePaymentInput(amount, currency, paymentMethod)) {
+      return res.status(400).json({ error: 'Invalid input. Please ensure the amount, currency, and payment method are valid.' });
+    }
+
+    const userId = req.user.id; 
+
+    //just random
+    const swiftCode = `SWIFT${Math.floor(100000 + Math.random() * 900000)}`;
 
     const newPayment = {
       amount,
       currency,
       paymentMethod,
       userId,
-      status: 'unresolved', 
+      status: 'unresolved',
       createdAt: new Date(),
+      swiftCode,  
     };
 
     const db = client.db('blogs');
@@ -185,18 +217,64 @@ app.post('/api/submit-payment', authenticateToken, async (req, res) => {
   }
 });
 
+
 // View Payments route
-app.get('/api/view-payments', authenticateToken, async (req, res) => {
+app.get('/api/view-payments', async (req, res) => {
   try {
     const db = client.db('blogs');
-    const collection = db.collection('payments');
+    const paymentsCollection = db.collection('payments');
 
-    const payments = await collection.find({ status: 'unresolved' }).toArray();
-    
+    const payments = await paymentsCollection.aggregate([
+      {
+        $match: {
+          status: { $ne: 'resolved' }  
+        }
+      },
+      {
+        $addFields: {
+          userId: { $toObjectId: "$userId" }
+        }
+      },
+      {
+        $lookup: {
+          from: 'user',
+          localField: 'userId',
+          foreignField: '_id',
+          as: 'userDetails'
+        }
+      },
+      {
+        $unwind: {
+          path: '$userDetails',
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          amount: 1,
+          currency: 1,
+          paymentMethod: 1,
+          status: 1,
+          createdAt: 1,
+          swiftCode: 1,       
+          userId: 1,
+          userDetails: {
+            _id: 1,
+            fullName: 1,
+            email: 1,
+            accountNumber: 1
+          }
+        }
+      }
+    ]).toArray();
+
+    console.log('Payments with User Details:', payments); 
+
     res.status(200).json({ payments });
-  } catch (err) {
-    console.error('Error retrieving payments:', err);
-    res.status(500).json({ error: 'Failed to retrieve payments' });
+  } catch (error) {
+    console.error('Error fetching payments:', error);
+    res.status(500).json({ message: 'Failed to fetch payments. Please try again later.' });
   }
 });
 
